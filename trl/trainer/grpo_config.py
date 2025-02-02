@@ -56,15 +56,12 @@ class GRPOConfig(TrainingArguments):
         use_vllm (`bool`, *optional*, defaults to `False`):
             Whether to use vLLM for generating completions. If set to `True`, ensure that a GPU is kept unused for
             training, as vLLM will require one for generation. vLLM must be installed (`pip install vllm`).
-        vllm_device (`str`, *optional*, defaults to `"auto"`):
-            Device where vLLM generation will run, e.g. `"cuda:1"`. If set to `"auto"` (default), the system will
-            automatically select the next available GPU after the last one used for training. This assumes that
-            training has not already occupied all available GPUs.
-        vllm_gpu_memory_utilization (`float`, *optional*, defaults to `0.9`):
-            Ratio (between 0 and 1) of GPU memory to reserve for the model weights, activations, and KV cache on the
-            device dedicated to generation powered by vLLM. Higher values will increase the KV cache size and thus
-            improve the model's throughput. However, if the value is too high, it may cause out-of-memory (OOM) errors
-            during initialization.
+        vllm_init_kwargs (`dict`, *optional*, defaults to `{"device": "auto", "gpu_memory_utilization": 0.9}`):
+            Dictionary of configuration parameters for vLLM generation. Supported keys include:
+            'device' (str, defaults to 'auto'): Device where vLLM generation will run, e.g. 'cuda:1'. If 'auto',
+            the system will automatically select the next available GPU after training GPUs.
+            'gpu_memory_utilization' (float, defaults to 0.9): Ratio of GPU memory to reserve for model weights,
+            activations, and KV cache. Higher values increase throughput but may cause OOM errors.
 
         > Parameters that control the training
 
@@ -127,21 +124,15 @@ class GRPOConfig(TrainingArguments):
             "(`pip install vllm`)."
         },
     )
-    vllm_device: Optional[str] = field(
-        default="auto",
-        metadata={
-            "help": "Device where vLLM generation will run, e.g. 'cuda:1'. If set to 'auto' (default), the system "
-            "will automatically select the next available GPU after the last one used for training. This assumes "
-            "that training has not already occupied all available GPUs."
+    vllm_init_kwargs: Optional[dict] = field(
+        default_factory=lambda: {
+            "device": "auto",
+            "gpu_memory_utilization": 0.9,
         },
-    )
-    vllm_gpu_memory_utilization: float = field(
-        default=0.9,
         metadata={
-            "help": "Ratio (between 0 and 1) of GPU memory to reserve for the model weights, activations, and KV "
-            "cache on the device dedicated to generation powered by vLLM. Higher values will increase the KV cache "
-            "size and thus improve the model's throughput. However, if the value is too high, it may cause "
-            "out-of-memory (OOM) errors during initialization."
+            "help": "Keyword arguments for vLLM engine. Common parameters include: 'device' (str, defaults to 'auto'): "
+            "Device where vLLM generation will run; 'gpu_memory_utilization' (float, defaults to 0.9): Ratio of "
+            "GPU memory to reserve. Any other valid vLLM engine parameters can be included in this dictionary."
         },
     )
 

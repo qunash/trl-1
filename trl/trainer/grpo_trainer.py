@@ -285,7 +285,7 @@ class GRPOTrainer(Trainer):
                 )
 
             if self.accelerator.is_main_process:
-                vllm_device = self.args.vllm_device
+                vllm_device = self.args.vllm_init_kwargs.get("device")
                 if vllm_device == "auto":
                     vllm_device = f"cuda:{self.accelerator.num_processes}"  # take the next GPU idx
                 # Check that the requested device is available
@@ -313,7 +313,7 @@ class GRPOTrainer(Trainer):
                     self.llm = LLM(
                         model=model.name_or_path,
                         device=vllm_device,
-                        gpu_memory_utilization=self.args.vllm_gpu_memory_utilization,
+                        **self.args.vllm_init_kwargs,
                     )
                 self.sampling_params = SamplingParams(
                     n=self.num_generations,
