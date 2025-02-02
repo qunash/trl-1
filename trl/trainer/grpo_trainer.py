@@ -203,6 +203,8 @@ class GRPOTrainer(Trainer):
         elif peft_config is None:
             # If PEFT configuration is not provided, create a reference model based on the initial model.
             self.ref_model = create_reference_model(model)
+            # Move reference model to CPU by default
+            self.ref_model = self.ref_model.to("cpu")
         else:
             # If PEFT is used, the reference model is not needed since the adapter can be disabled
             # to revert to the initial model.
@@ -478,7 +480,12 @@ class GRPOTrainer(Trainer):
 
         with torch.inference_mode():
             if self.ref_model is not None:
+                # Move reference model to GPU for computation
+                self.ref_model = self.ref_model.to(device)
                 ref_per_token_logps = get_per_token_logps(self.ref_model, prompt_completion_ids, logits_to_keep)
+                # Move reference model back to CPU to free GPU memory
+                self.ref_model = self.ref_model.to("cpu")
+                torch.cuda.empty_cache()  # Clear GPU memory cache
             else:
                 with self.accelerator.unwrap_model(model).disable_adapter():
                     ref_per_token_logps = get_per_token_logps(model, prompt_completion_ids, logits_to_keep)
