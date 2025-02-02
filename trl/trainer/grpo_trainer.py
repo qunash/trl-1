@@ -312,7 +312,6 @@ class GRPOTrainer(Trainer):
                 with world_size_patch, profiling_patch:
                     self.llm = LLM(
                         model=model.name_or_path,
-                        device=vllm_device,
                         **self.args.vllm_init_kwargs,
                     )
                 self.sampling_params = SamplingParams(
