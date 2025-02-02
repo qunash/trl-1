@@ -426,18 +426,52 @@ class GRPOTrainer(Trainer):
         completion_ids = prompt_completion_ids[:, prompt_length:]
 
         # Get the per-token log probabilities for the completions for the model and the reference model
-        def get_per_token_logps(model, input_ids, logits_to_keep):
-            # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-            logits = model(input_ids, logits_to_keep=logits_to_keep + 1).logits  # (B, L, V)
-            logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-
-            # Compute the log probabilities for the input tokens. Use a loop to reduce memory peak.
-            per_token_logps = []
-            for logits_row, input_ids_row in zip(logits, input_ids[:, -logits_to_keep:]):
-                log_probs = logits_row.log_softmax(dim=-1)
-                token_log_prob = torch.gather(log_probs, dim=1, index=input_ids_row.unsqueeze(1)).squeeze(1)
-                per_token_logps.append(token_log_prob)
-            return torch.stack(per_token_logps)
+        def get_per_token_logps(model, input_ids, num_logits_to_keep):
+            """
+            Compute per-token log probabilities by processing sequences one at a time.
+            
+            Args:
+                model: The language model
+                input_ids: Tensor of shape (batch_size, seq_length)
+                num_logits_to_keep: Number of logits to compute from the end
+                
+            Returns:
+                Tensor of shape (batch_size, num_logits_to_keep) containing log probs
+            """
+            device = input_ids.device
+            all_per_token_logps = []
+            
+            # Process one sequence at a time
+            for single_input_ids in input_ids:
+                # Add batch dimension
+                batched_input = single_input_ids.unsqueeze(0)
+                
+                # Forward pass with single sequence
+                logits = model(batched_input, num_logits_to_keep=num_logits_to_keep + 1).logits  # (1, L, V)
+                logits = logits[:, :-1, :]  # Remove last position's logits
+                
+                # Get relevant tokens to compute probs for
+                relevant_input_ids = batched_input[:, -num_logits_to_keep:]
+                
+                # Compute log probs one position at a time to save memory
+                sequence_logps = []
+                for pos_logits, token_id in zip(logits[0], relevant_input_ids[0]):
+                    # Compute log softmax for single position
+                    log_probs = pos_logits.log_softmax(dim=-1)
+                    # Get log prob for the actual token
+                    token_log_prob = log_probs[token_id]
+                    sequence_logps.append(token_log_prob)
+                
+                # Stack position-wise log probs for this sequence
+                sequence_logps = torch.stack(sequence_logps)
+                all_per_token_logps.append(sequence_logps)
+                
+                # Clear GPU memory
+                del logits
+                torch.cuda.empty_cache()
+            
+            # Stack all sequences' results
+            return torch.stack(all_per_token_logps)
 
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
         per_token_logps = get_per_token_logps(model, prompt_completion_ids, logits_to_keep)
