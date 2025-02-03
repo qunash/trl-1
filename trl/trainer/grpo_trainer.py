@@ -428,7 +428,7 @@ class GRPOTrainer(Trainer):
         completion_ids = prompt_completion_ids[:, prompt_length:]
 
         # Get the per-token log probabilities for the completions for the model and the reference model
-        def get_per_token_logps(model, input_ids, num_logits_to_keep):
+        def get_per_token_logps(model, input_ids, num_logits_to_keep, prompt_attention_mask):
             """
             Compute per-token log probabilities by processing sequences one at a time.
             
@@ -436,6 +436,7 @@ class GRPOTrainer(Trainer):
                 model: The language model
                 input_ids: Tensor of shape (batch_size, seq_length)
                 num_logits_to_keep: Number of logits to compute from the end
+                prompt_attention_mask: Attention mask for the prompt portion
                 
             Returns:
                 Tensor of shape (batch_size, num_logits_to_keep) containing log probs
@@ -444,12 +445,22 @@ class GRPOTrainer(Trainer):
             all_per_token_logps = []
             
             # Process one sequence at a time
-            for single_input_ids in input_ids:
+            for idx, single_input_ids in enumerate(input_ids):
                 # Add batch dimension
                 batched_input = single_input_ids.unsqueeze(0)
                 
+                # Create attention mask: use prompt mask and extend with 1s for completion
+                attention_mask = torch.cat([
+                    prompt_attention_mask[idx % len(prompt_attention_mask)].unsqueeze(0),
+                    torch.ones((1, num_logits_to_keep), device=device)
+                ], dim=1)
+                
                 # Forward pass with single sequence
-                logits = model(batched_input, num_logits_to_keep=num_logits_to_keep + 1).logits  # (1, L, V)
+                logits = model(
+                    batched_input, 
+                    attention_mask=attention_mask,
+                    num_logits_to_keep=num_logits_to_keep + 1
+                ).logits  # (1, L, V)
                 logits = logits[:, :-1, :]  # Remove last position's logits
                 
                 # Get relevant tokens to compute probs for
@@ -476,19 +487,19 @@ class GRPOTrainer(Trainer):
             return torch.stack(all_per_token_logps)
 
         logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-        per_token_logps = get_per_token_logps(model, prompt_completion_ids, logits_to_keep)
+        per_token_logps = get_per_token_logps(model, prompt_completion_ids, logits_to_keep, prompt_inputs["attention_mask"])
 
         with torch.inference_mode():
             if self.ref_model is not None:
                 # Move reference model to GPU for computation
                 self.ref_model = self.ref_model.to(device)
-                ref_per_token_logps = get_per_token_logps(self.ref_model, prompt_completion_ids, logits_to_keep)
+                ref_per_token_logps = get_per_token_logps(self.ref_model, prompt_completion_ids, logits_to_keep, prompt_inputs["attention_mask"])
                 # Move reference model back to CPU to free GPU memory
                 self.ref_model = self.ref_model.to("cpu")
                 torch.cuda.empty_cache()  # Clear GPU memory cache
             else:
                 with self.accelerator.unwrap_model(model).disable_adapter():
-                    ref_per_token_logps = get_per_token_logps(model, prompt_completion_ids, logits_to_keep)
+                    ref_per_token_logps = get_per_token_logps(model, prompt_completion_ids, logits_to_keep, prompt_inputs["attention_mask"])
 
         # Compute the KL divergence between the model and the reference model
         per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
