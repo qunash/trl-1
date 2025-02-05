@@ -376,10 +376,26 @@ class GRPOTrainer(Trainer):
     # Get the per-token log probabilities for the completions for the model and the reference model
     def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
         # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
-        logits = model(
-            input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1
-        ).logits  # (B, L, V)
-        logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+        if self.args.logits_batch_size is None:
+            logits = model(
+                input_ids=input_ids, attention_mask=attention_mask, logits_to_keep=logits_to_keep + 1
+            ).logits  # (B, L, V)
+            logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
+        else:
+            # Process logits in batches to reduce memory consumption
+            batch_size = self.args.logits_batch_size
+            all_logits = []
+            for i in range(0, input_ids.size(0), batch_size):
+                batch_input_ids = input_ids[i:i + batch_size]
+                batch_attention_mask = attention_mask[i:i + batch_size]
+                batch_logits = model(
+                    input_ids=batch_input_ids, 
+                    attention_mask=batch_attention_mask, 
+                    logits_to_keep=logits_to_keep + 1
+                ).logits  # (b, L, V)
+                batch_logits = batch_logits[:, :-1, :]  # (b, L-1, V)
+                all_logits.append(batch_logits)
+            logits = torch.cat(all_logits, dim=0)  # (B, L-1, V)
 
         # Compute the log probabilities for the input tokens. Use a loop to reduce memory peak.
         per_token_logps = []

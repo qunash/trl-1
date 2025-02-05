@@ -99,6 +99,10 @@ class GRPOConfig(TrainingArguments):
             τ parameter from the [TR-DPO](https://huggingface.co/papers/2404.09656) paper, which determines how
             frequently the current policy is synchronized with the reference policy. To use this parameter, you must
             set `sync_ref_model=True`.
+
+        logits_batch_size (`int` or `None`, *optional*, defaults to `None`):
+            Number of samples to process at once when computing logits. If None, processes all samples in a single batch.
+            Lower values reduce memory usage but increase computation time.
     """
 
     # Parameters that control the model and reference model
@@ -145,6 +149,14 @@ class GRPOConfig(TrainingArguments):
             "generation, improving generation speed. However, disabling this option allows training models that "
             "exceed the VRAM capacity of a single GPU, albeit at the cost of slower generation. Disabling this option "
             "is not compatible with vLLM generation."
+        },
+    )
+
+    logits_batch_size: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Number of samples to process at once when computing logits. If None, processes all samples in a single batch. "
+            "Lower values reduce memory usage but increase computation time."
         },
     )
 
