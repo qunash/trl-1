@@ -1649,7 +1649,7 @@ def flush_left(mask: torch.Tensor, *tensors: torch.Tensor) -> tuple[torch.Tensor
         return mask, *tensors
 
 
-def compute_logps_with_prompt_cache(
+def _compute_logps_with_prompt_cache(
     model: torch.nn.Module,
     prompt_inputs: dict,
     completion_ids: torch.LongTensor,
@@ -1743,3 +1743,89 @@ def compute_logps_with_prompt_cache(
     # Combine results
     all_completion_token_logps = torch.cat(completion_token_logps, dim=0)  # (B*G, C-1)
     return torch.cat([first_completion_token_logps, all_completion_token_logps], dim=1)  # (B*G, C)
+
+# VRAM optimized version
+def compute_logps_with_prompt_cache(
+model: torch.nn.Module,
+prompt_inputs: dict,
+completion_ids: torch.LongTensor,
+mini_batch_size: int,
+requires_grad_for_completion: bool = True,
+) -> torch.FloatTensor:
+    """
+    Compute log probabilities of completion tokens using prompt cache with optimized memory and computation.
+    
+    Args:
+        model (`nn.Module`): A causal LM (transformers.AutoModelForCausalLM) or similar.
+        prompt_inputs (`dict`): The dict of prompt tensors, e.g. {"input_ids", "attention_mask", ...}.
+        completion_ids (`torch.LongTensor`): Shape [B*G, completion_len].
+        mini_batch_size (`int`): The number of completion rows to process at once.
+        requires_grad_for_completion (`bool`): Whether to enable gradient for the completion pass.
+
+    Returns:
+        per_token_logps (`torch.FloatTensor`): shape [B*G, completion_len]
+    """
+    # Get dimensions
+    B = prompt_inputs["input_ids"].size(0)
+    G = completion_ids.size(0) // B
+    C = completion_ids.size(1)
+    
+    if mini_batch_size <= 0:
+        mini_batch_size = completion_ids.size(0)
+
+    # Preallocate result tensor
+    result = torch.empty((B*G, C), device=completion_ids.device)
+    
+    # Process prompt
+    with torch.no_grad():
+        prompt_out = model(**prompt_inputs, use_cache=True, num_logits_to_keep=1)
+        
+        # Optimized prompt logprobs computation
+        last_logits = prompt_out.logits[:, -1:]
+        first_token_ids = completion_ids[:, :1].unsqueeze(-1)
+        gathered_prompt_logits = torch.gather(
+            last_logits.repeat_interleave(G, dim=0), 
+            dim=-1, 
+            index=first_token_ids
+        )
+        prompt_logsumexp = torch.logsumexp(last_logits, dim=-1).repeat_interleave(G, dim=0)
+        result[:, 0] = (gathered_prompt_logits - prompt_logsumexp.unsqueeze(-1)).squeeze(-1)
+        
+        del last_logits, gathered_prompt_logits, prompt_logsumexp
+
+    # Expand KV Cache
+    repeated_kv_cache = prompt_out.past_key_values  # a DynamicCache
+    repeated_kv_cache.batch_repeat_interleave(G)
+    mini_batch_kv_caches = repeated_kv_cache.batch_split(full_batch_size=B * G, split_size=mini_batch_size)
+
+    # Precompute indices for completion tokens
+    next_token_indices = completion_ids[:, 1:].unsqueeze(-1)  # (B*G, C-1, 1)
+
+    # Process completion tokens in mini-batches
+    for batch_idx, mini_batch_kv_cache in enumerate(mini_batch_kv_caches):
+        start_idx = batch_idx * mini_batch_size
+        end_idx = min(start_idx + mini_batch_size, B*G)
+        mini_batch_ids = completion_ids[start_idx:end_idx]  # (mini_batch_size, C)
+        mini_batch_indices = next_token_indices[start_idx:end_idx]
+
+        with torch.set_grad_enabled(requires_grad_for_completion):
+            mini_batch_logits = model(
+                input_ids=mini_batch_ids,
+                past_key_values=mini_batch_kv_cache,
+                num_logits_to_keep=C,
+                use_cache=False,
+            ).logits[:, -C:-1, :]  # (mini_batch_size, C-1, vocab_size)
+
+            # Gather relevant logits and compute logsumexp in one go
+            mini_batch_token_logits = torch.gather(mini_batch_logits, dim=-1, index=mini_batch_indices)
+            mini_batch_logsumexp = torch.logsumexp(mini_batch_logits, dim=-1)
+            
+            # Compute log probs and store directly in result tensor
+            result[start_idx:end_idx, 1:] = (
+                mini_batch_token_logits.squeeze(-1) - mini_batch_logsumexp
+            )
+            
+            # Clear memory as soon as tensors are no longer needed
+            del mini_batch_logits, mini_batch_token_logits, mini_batch_logsumexp
+
+    return result
