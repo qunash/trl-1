@@ -50,21 +50,23 @@ class GRPOConfig(TrainingArguments):
             Temperature for sampling. The higher the temperature, the more random the completions.
         max_completion_length (`int` or `None`, *optional*, defaults to `256`):
             Maximum length of the generated completion.
+        ds3_gather_for_generation (`bool`, *optional*, defaults to `True`):
+            This setting applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for generation,
+            improving generation speed. However, disabling this option allows training models that exceed the VRAM
+            capacity of a single GPU, albeit at the cost of slower generation. Disabling this option is not compatible
+            with vLLM generation.
 
         > Parameters that control generation acceleration powered by vLLM
 
         use_vllm (`bool`, *optional*, defaults to `False`):
             Whether to use vLLM for generating completions. If set to `True`, ensure that a GPU is kept unused for
             training, as vLLM will require one for generation. vLLM must be installed (`pip install vllm`).
-        vllm_device (`str`, *optional*, defaults to `"auto"`):
-            Device where vLLM generation will run, e.g. `"cuda:1"`. If set to `"auto"` (default), the system will
-            automatically select the next available GPU after the last one used for training. This assumes that
-            training has not already occupied all available GPUs.
-        vllm_gpu_memory_utilization (`float`, *optional*, defaults to `0.9`):
-            Ratio (between 0 and 1) of GPU memory to reserve for the model weights, activations, and KV cache on the
-            device dedicated to generation powered by vLLM. Higher values will increase the KV cache size and thus
-            improve the model's throughput. However, if the value is too high, it may cause out-of-memory (OOM) errors
-            during initialization.
+        vllm_init_kwargs (`dict`, *optional*, defaults to `{"device": "auto", "gpu_memory_utilization": 0.9}`):
+            Dictionary of configuration parameters for vLLM generation. Supported keys include:
+            'device' (str, defaults to 'auto'): Device where vLLM generation will run, e.g. 'cuda:1'. If 'auto',
+            the system will automatically select the next available GPU after training GPUs.
+            'gpu_memory_utilization' (float, defaults to 0.9): Ratio of GPU memory to reserve for model weights,
+            activations, and KV cache. Higher values increase throughput but may cause OOM errors.
 
         > Parameters that control the training
 
@@ -78,6 +80,20 @@ class GRPOConfig(TrainingArguments):
             Number of updates steps to accumulate the gradients for, before performing a backward/update pass.
         beta (`float`, *optional*, defaults to `0.04`):
             KL coefficient.
+        sync_ref_model (`bool`, *optional*, defaults to `False`):
+            Whether to synchronize the reference model with the active model every `ref_model_sync_steps` steps, using
+            the `ref_model_mixup_alpha` parameter. This synchronization originites from the
+            [TR-DPO](https://huggingface.co/papers/2404.09656) paper.
+        ref_model_mixup_alpha (`float`, *optional*, defaults to `0.9`):
+            α parameter from the [TR-DPO](https://huggingface.co/papers/2404.09656) paper, which controls the mix
+            between the current policy and the previous reference policy during updates. The reference policy is
+            updated according to the equation: `π_ref = α * π_θ + (1 - α) * π_ref_prev`. To use this parameter, you
+            must set `sync_ref_model=True`.
+        ref_model_sync_steps (`int`, *optional*, defaults to `64`):
+            τ parameter from the [TR-DPO](https://huggingface.co/papers/2404.09656) paper, which determines how
+            frequently the current policy is synchronized with the reference policy. To use this parameter, you must
+            set `sync_ref_model=True`.
+
         logit_computation_mini_batch_size (`int`, *optional*, defaults to `0`):
             Number of rows of the completion logit tensors to process at a time. 0 means no mini-batching, which is the
             default. Using a low value will reduce memory usage with tradeoff of slower computation. However, since the
@@ -122,6 +138,23 @@ class GRPOConfig(TrainingArguments):
         default=256,
         metadata={"help": "Maximum length of the generated completion."},
     )
+    ds3_gather_for_generation: bool = field(
+        default=True,
+        metadata={
+            "help": "This setting applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for "
+            "generation, improving generation speed. However, disabling this option allows training models that "
+            "exceed the VRAM capacity of a single GPU, albeit at the cost of slower generation. Disabling this option "
+            "is not compatible with vLLM generation."
+        },
+    )
+
+    logits_batch_size: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Number of samples to process at once when computing logits. If None, processes all samples in a single batch. "
+            "Lower values reduce memory usage but increase computation time."
+        },
+    )
 
     # Parameters that control generation acceleration powered by vLLM
     use_vllm: Optional[bool] = field(
@@ -132,23 +165,17 @@ class GRPOConfig(TrainingArguments):
             "(`pip install vllm`)."
         },
     )
-    vllm_device: Optional[str] = field(
-        default="auto",
-        metadata={
-            "help": "Device where vLLM generation will run, e.g. 'cuda:1'. If set to 'auto' (default), the system "
-            "will automatically select the next available GPU after the last one used for training. This assumes "
-            "that training has not already occupied all available GPUs."
-        },
-    )
-    vllm_gpu_memory_utilization: float = field(
-        default=0.9,
-        metadata={
-            "help": "Ratio (between 0 and 1) of GPU memory to reserve for the model weights, activations, and KV "
-            "cache on the device dedicated to generation powered by vLLM. Higher values will increase the KV cache "
-            "size and thus improve the model's throughput. However, if the value is too high, it may cause "
-            "out-of-memory (OOM) errors during initialization."
-        },
-    )
+    vllm_init_kwargs: Optional[dict] = field(
+            default_factory=lambda: {
+                "device": "auto",
+                "gpu_memory_utilization": 0.9,
+            },
+            metadata={
+                "help": "Keyword arguments for vLLM engine. Common parameters include: 'device' (str, defaults to 'auto'): "
+                "Device where vLLM generation will run; 'gpu_memory_utilization' (float, defaults to 0.9): Ratio of "
+                "GPU memory to reserve. Any other valid vLLM engine parameters can be included in this dictionary."
+            },
+        )
 
     # Parameters that control the training
     learning_rate: float = field(
@@ -179,6 +206,28 @@ class GRPOConfig(TrainingArguments):
         default=0.04,
         metadata={"help": "KL coefficient."},
     )
+    sync_ref_model: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to synchronize the reference model with the active model every `ref_model_sync_steps` "
+            "steps, using the `ref_model_mixup_alpha` parameter."
+        },
+    )
+    ref_model_mixup_alpha: float = field(
+        default=0.9,
+        metadata={
+            "help": "α parameter from the TR-DPO paper, which controls the mix between the current policy and the "
+            "previous reference policy during updates. The reference policy is updated according to the equation: "
+            "`π_ref = α * π_θ + (1 - α) * π_ref_prev`. To use this parameter, you must set `sync_ref_model=True`."
+        },
+    )
+    ref_model_sync_steps: int = field(
+        default=64,
+        metadata={
+            "help": "τ parameter from the TR-DPO paper, which determines how frequently the current policy is "
+            "synchronized with the reference policy. To use this parameter, you must set `sync_ref_model=True`."
+        },
+    )
     logit_computation_mini_batch_size: int = field(
         default=0,
         metadata={
@@ -188,3 +237,4 @@ class GRPOConfig(TrainingArguments):
             "this argument, especially when dealing with larger LLMs."
         },
     )
+    
