@@ -99,6 +99,13 @@ class GRPOConfig(TrainingArguments):
             default. Using a low value will reduce memory usage with tradeoff of slower computation. However, since the
             training speed bottleneck occurs in the generation step, it is recommended to utilize this argument, especially
             when dealing with larger LLMs."
+
+        enable_profiling: bool = field(
+            default=False,
+            metadata={
+                "help": "Whether to print profiling information about generation and logit computation times."
+            },
+        )
     """
 
     # Parameters that control the model and reference model
@@ -235,6 +242,13 @@ class GRPOConfig(TrainingArguments):
             "which is the default. Using a low value will reduce memory usage with tradeoff of slower computation. "
             "However, since the training speed bottleneck occurs in the generation step, it is recommended to utilize "
             "this argument, especially when dealing with larger LLMs."
+        },
+    )
+
+    enable_profiling: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to print profiling information about generation and logit computation times."
         },
     )
     

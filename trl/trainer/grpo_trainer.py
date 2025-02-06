@@ -426,7 +426,7 @@ class GRPOTrainer(Trainer):
                 )
 
         end_time = time.perf_counter()
-        if self.accelerator.is_main_process:
+        if self.accelerator.is_main_process and self.args.enable_profiling:
             print(f"Generation took {end_time - start_time:0.4f} seconds")
 
         # Compute prompt length and extract completion ids
@@ -526,7 +526,7 @@ class GRPOTrainer(Trainer):
                             mini_batch_size=mini_batch_size,
                         )
         end_time = time.perf_counter()
-        if self.accelerator.is_main_process:
+        if self.accelerator.is_main_process and self.args.enable_profiling:
             print(f"Logits computation took {end_time - start_time:0.4f} seconds")
 
         # Compute the KL divergence between the model and the reference model
